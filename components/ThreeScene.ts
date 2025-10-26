@@ -1,6 +1,9 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import type { Track } from '../types';
 
 const avg = (arr: Uint8Array, s: number, e: number): number => {
@@ -86,56 +89,35 @@ const meshVertexShader = `
   }
 
   void main() {
-    // Bass controls the overall scale for a "punchy" feel
     float bass_scale = 1.0 + u_bass * 0.5; 
-
-    // FBM-style noise for more detail by layering multiple noise calls (octaves)
-    // Octave 1: Low frequency, high amplitude (big waves)
     vec3 p1 = position * 1.5 + u_time * 0.1;
     float noise1 = pnoise(p1, vec3(10.0));
-
-    // Octave 2: Higher frequency, lower amplitude (smaller details)
     vec3 p2 = position * 4.0 + u_time * 0.3;
     float noise2 = pnoise(p2, vec3(10.0));
-
-    // Octave 3: Even higher frequency, even lower amplitude (fine texture)
     vec3 p3 = position * 8.0 + u_time * 0.5;
     float noise3 = pnoise(p3, vec3(10.0));
-
-    // Combine the octaves. The multipliers (1.0, 0.5, 0.25) are the amplitudes.
     float combined_noise = noise1 * 1.0 + noise2 * 0.5 + noise3 * 0.25;
-
     v_noise = combined_noise;
-
-    // Treble controls the DISPLACEMENT amount, pow() makes it more dramatic
     float displacement_multiplier = pow(u_treble, 2.0);
     float displacement = displacement_multiplier * combined_noise * 0.8;
-    
-    // Calculate final position
     vec3 scaledPosition = position * bass_scale;
     vec3 displacedPosition = scaledPosition + (normal * displacement);
-    
     gl_Position = projectionMatrix * modelViewMatrix * vec4(displacedPosition, 1.0);
   }
 `;
 
 const meshFragmentShader = `
-  uniform vec3 u_color_a; // Burgundy
-  uniform vec3 u_color_b; // Pink
-  uniform vec3 u_color_c; // Orange/Gold
+  uniform vec3 u_color_a;
+  uniform vec3 u_color_b;
+  uniform vec3 u_color_c;
   uniform float u_mid;
   uniform float u_treble;
-  uniform float u_bass_guitar_presence;
   varying float v_noise;
 
   void main() {
     vec3 mid_color = mix(u_color_a, u_color_b, u_mid);
     vec3 final_color = mix(mid_color, u_color_c, u_treble * 0.8);
     final_color += v_noise * 0.1;
-
-    vec3 bass_guitar_color = vec3(0.588, 0.047, 0.031); // #ffe74d
-    final_color = mix(final_color, bass_guitar_color, u_bass_guitar_presence);
-
     gl_FragColor = vec4(final_color, 1.0);
   }
 `;
@@ -144,24 +126,21 @@ const backgroundVertexShader = `
   uniform float u_time;
   uniform float u_treble;
   attribute float a_random;
-  varying float v_random; // Pass random value to Fragment Shader
+  varying float v_random;
 
   void main() {
-    v_random = a_random; // Assign value
-
+    v_random = a_random;
     float tremble_amount = u_treble * 0.15;
     vec3 displacement = vec3(
       sin(u_time * a_random * 1.5 + a_random) * tremble_amount,
       cos(u_time * a_random * 1.2 + a_random) * tremble_amount,
       sin(u_time * a_random * 1.8 + a_random) * tremble_amount
     );
-
     vec4 modelPosition = modelMatrix * vec4(position + displacement, 1.0);
     vec4 viewPosition = viewMatrix * modelPosition;
     vec4 projectedPosition = projectionMatrix * viewPosition;
-
     gl_Position = projectedPosition;
-    gl_PointSize = 6.0 + a_random * 6.0;
+    gl_PointSize = 5.0 + a_random * 5.0;
   }
 `;
 
@@ -171,20 +150,14 @@ const backgroundFragmentShader = `
   varying float v_random;
 
   void main() {
-    vec3 color = vec3(1.000, 0.973, 0.788); // #fff8c9 건들지마
-
-    // Increased contrast (pow 10.0) for a sharper twinkle
-    float sparkle = pow(sin(u_time * 3.0 * v_random + v_random * 6.28) * 0.5 + 0.5, 10.0);
-    // Increased intensity and audio reactivity
-    float final_sparkle = sparkle * (0.5 + u_treble * 5.0);
-
+    vec3 color = vec3(1.0, 0.906, 0.302);
+    float sparkle = pow(sin(u_time * 3.0 * v_random + v_random * 6.28) * 0.5 + 0.5, 20.0);
+    float final_sparkle = sparkle * (0.6 + u_treble * 8.0);
     float distance_to_center = distance(gl_PointCoord, vec2(0.5));
-    float glow = pow(1.0 - distance_to_center * 2.0, 2.0); 
-    
+    float glow = pow(1.0 - distance_to_center * 2.0, 2.0);
     gl_FragColor = vec4(color * glow, final_sparkle * glow);
   }
 `;
-
 
 export class ThreeScene {
   private canvas: HTMLCanvasElement;
@@ -196,6 +169,9 @@ export class ThreeScene {
   private scene!: THREE.Scene;
   private camera!: THREE.PerspectiveCamera;
   private controls!: OrbitControls;
+  
+  private composer!: EffectComposer;
+  private bloomPass!: UnrealBloomPass;
 
   private mesh!: THREE.Mesh;
   private meshUniforms!: { [uniform: string]: THREE.IUniform };
@@ -214,6 +190,7 @@ export class ThreeScene {
 
   public init() {
     this.setupScene();
+    this.setupPostProcessing();
     this.setupMesh();
     this.setupBackgroundParticles();
     this.handleResize();
@@ -243,27 +220,43 @@ export class ThreeScene {
     this.controls.maxDistance = 5;
   }
 
+  private setupPostProcessing() {
+    const renderPass = new RenderPass(this.scene, this.camera);
+
+    const initialParams = {
+        strength: 1.5,
+        radius: 0.4,
+        threshold: 0.85
+    };
+    this.bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(this.canvas.clientWidth, this.canvas.clientHeight),
+        initialParams.strength,
+        initialParams.radius,
+        initialParams.threshold
+    );
+
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(renderPass);
+    this.composer.addPass(this.bloomPass);
+  }
+
   private setupMesh() {
     const geometry = new THREE.IcosahedronGeometry(0.75, 64);
-
     this.meshUniforms = {
       u_time: { value: 0.0 },
       u_bass: { value: 0.0 },
       u_mid: { value: 0.0 },
       u_treble: { value: 0.0 },
-      u_bass_guitar_presence: { value: 0.0 },
       u_color_a: { value: new THREE.Color(this.track.palette[0] ?? '#7a1f2b') },
       u_color_b: { value: new THREE.Color('#d90057') },
-      u_color_c: { value: new THREE.Color('#512310') },
+      u_color_c: { value: new THREE.Color('#e09419') },
     };
-
     const material = new THREE.ShaderMaterial({
       uniforms: this.meshUniforms,
       vertexShader: meshVertexShader,
       fragmentShader: meshFragmentShader,
       wireframe: true,
     });
-
     this.mesh = new THREE.Mesh(geometry, material);
     this.scene.add(this.mesh);
   }
@@ -273,7 +266,6 @@ export class ThreeScene {
     const positions = new Float32Array(particleCount * 3);
     const randoms = new Float32Array(particleCount);
     const radius = 10;
-
     for (let i = 0; i < particleCount; i++) {
       const i3 = i * 3;
       const u = Math.random();
@@ -285,16 +277,13 @@ export class ThreeScene {
       positions[i3 + 2] = radius * Math.cos(phi);
       randoms[i] = Math.random();
     }
-
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('a_random', new THREE.BufferAttribute(randoms, 1));
-
     this.backgroundParticleUniforms = {
         u_time: { value: 0.0 },
         u_treble: { value: 0.0 },
     };
-
     const material = new THREE.ShaderMaterial({
       uniforms: this.backgroundParticleUniforms,
       vertexShader: backgroundVertexShader,
@@ -303,7 +292,6 @@ export class ThreeScene {
       transparent: true,
       depthWrite: false,
     });
-
     this.backgroundParticles = new THREE.Points(geometry, material);
     this.scene.add(this.backgroundParticles);
   }
@@ -313,35 +301,29 @@ export class ThreeScene {
     this.analyser.getByteFrequencyData(this.dataArray);
     this.update();
     this.controls.update();
-    this.renderer.render(this.scene, this.camera);
+    this.composer.render();
   };
 
   private update() {
     const time = performance.now() * 0.0005;
-    
-    // --- Audio Analysis ---
     const bass = avg(this.dataArray, 0, 8) / 255;
     const mid = avg(this.dataArray, 40, 100) / 255;
     const treble = avg(this.dataArray, 150, 400) / 255;
-    
-    // Detect "bass guitar" in the 80-400Hz range approx
-    // Map frequencyBinCount to frequency: (index / fftSize) * sampleRate
-    // 80Hz bin ~ (80 / 22050) * 1024 = bin 3.7
-    // 400Hz bin ~ (400 / 22050) * 1024 = bin 18.5
-    const bassGuitarPresence = avg(this.dataArray, 4, 18) / 255;
 
-    // Update uniforms for the main mesh
     this.meshUniforms.u_time.value = time;
     this.meshUniforms.u_bass.value = bass;
     this.meshUniforms.u_mid.value = mid;
     this.meshUniforms.u_treble.value = treble;
-    this.meshUniforms.u_bass_guitar_presence.value = bassGuitarPresence;
 
-
-    // Update uniforms for the background particles
     if (this.backgroundParticleUniforms) {
       this.backgroundParticleUniforms.u_time.value = time;
       this.backgroundParticleUniforms.u_treble.value = treble;
+    }
+    
+    if (this.bloomPass) {
+        this.bloomPass.strength = 0.5 + bass * 2.0;
+        this.bloomPass.radius = 0.2 + mid * 0.8;
+        this.bloomPass.threshold = 0.9 - treble * 0.5;
     }
   }
 
@@ -350,6 +332,7 @@ export class ThreeScene {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this.composer?.setSize(width, height);
   }
 
   private handleResize = () => {
@@ -363,12 +346,10 @@ export class ThreeScene {
     this.controls?.dispose();
     this.mesh?.geometry.dispose();
     (this.mesh?.material as THREE.Material)?.dispose();
-    
     if (this.backgroundParticles) {
       this.backgroundParticles.geometry.dispose();
       (this.backgroundParticles.material as THREE.Material).dispose();
     }
-    
     this.renderer?.dispose();
   }
 }
