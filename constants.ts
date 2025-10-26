@@ -24,6 +24,6 @@ export const TRACKS: Track[] = [
     title: 'Liam St. John — Believer',
     file: 'Believer - Liam St. John.mp3',
     palette: ['#86a8e7','#91eae4','#c2e9fb','#a1c4fd'],
-    mood: 'drive • grit • uplift',
+    mood: 'intensity • fire',
   },
 ];

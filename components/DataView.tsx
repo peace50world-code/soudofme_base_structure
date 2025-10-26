@@ -1,8 +1,10 @@
+
 import React, { useRef, useEffect, useCallback } from 'react';
 import type { Track, Particle } from '../types';
 import { renderEmotionScene, ensureParticles } from './EmotionRenderer';
 import { ThreeScene } from './ThreeScene';
 import { JourneyScene } from './JourneyScene';
+import { BelieverScene } from './BelieverScene';
 
 interface DataViewProps {
   analyser: AnalyserNode | null;
@@ -44,6 +46,8 @@ const DataView: React.FC<DataViewProps> = ({ analyser, currentTrack, onEnterScen
         scene = new ThreeScene(webglCanvasRef.current, analyser, currentTrack);
       } else if (currentTrack.id === 'journey') {
         scene = new JourneyScene(webglCanvasRef.current, analyser, currentTrack);
+      } else if (currentTrack.id === 'believer') {
+        scene = new BelieverScene(webglCanvasRef.current, analyser, currentTrack);
       }
       
       if (scene) {

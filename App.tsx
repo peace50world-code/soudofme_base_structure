@@ -107,7 +107,7 @@ const App: React.FC = () => {
             analyser={analyser.current} 
             currentTrack={currentTrack} 
             onEnterScene={() => setView('scene')}
-            is3DMode={currentTrack.id === 'too-sweet' || currentTrack.id === 'journey'}
+            is3DMode={currentTrack.id === 'too-sweet' || currentTrack.id === 'journey' || currentTrack.id === 'believer'}
           />
         );
       case 'scene':

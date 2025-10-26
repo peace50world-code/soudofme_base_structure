@@ -1,8 +1,10 @@
+
 import React, { useRef, useEffect, useCallback } from 'react';
 import type { Track, Particle } from '../types';
 import { renderEmotionScene, ensureParticles } from './EmotionRenderer';
 import { ThreeScene } from './ThreeScene';
 import { JourneyScene } from './JourneyScene';
+import { BelieverScene } from './BelieverScene';
 
 interface SceneViewProps {
   analyser: AnalyserNode | null;
@@ -44,6 +46,12 @@ const SceneView: React.FC<SceneViewProps> = ({ analyser, currentTrack, onBack })
       journeyScene.init();
        visualizerRef.current = {
         destroy: () => journeyScene.destroy(),
+      };
+    } else if (currentTrack.id === 'believer') {
+      const believerScene = new BelieverScene(canvas, analyser, currentTrack);
+      believerScene.init();
+      visualizerRef.current = {
+        destroy: () => believerScene.destroy(),
       };
     } else {
       // Fallback to 2D renderer for other tracks
