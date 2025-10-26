@@ -56,7 +56,7 @@ const Player: React.FC<PlayerProps> = ({ tracks, currentTrack, isPlaying, onSele
           step="0.01"
           value={volume}
           onChange={(e) => onVolumeChange(parseFloat(e.target.value))}
-          className="w-24 accent-[#6cf]"
+          className="w-24 accent-zinc-400"
         />
       </div>
     </footer>

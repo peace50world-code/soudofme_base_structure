@@ -10,7 +10,7 @@ export const TRACKS: Track[] = [
     title: "WOODZ — Journey",
     file: "WOODZ (우즈) 'Journey' Official Audio - JXS_BP Official.mp3",
     palette: ['#9be15d','#f9f871','#6cd4ff','#3ba3ff'],
-    mood: 'hopeful • breeze • sunrise',
+    mood: 'hopeful • breeze',
   },
   {
     id: 'too-sweet',

@@ -46,8 +46,6 @@ const bgFS = `
 `;
 
 // ===== Ripple circles (one GL_POINT per circle) =====
-// attributes: a_center (vec2 NDC), a_t0 (start time), a_dur, a_rmax(px), a_colA/B/C
-// uniforms: u_time, u_dpr, u_view (viewport px)
 const rippleVS = `
   precision mediump float; precision mediump int;
   attribute vec2 a_center;
@@ -61,48 +59,39 @@ const rippleVS = `
   uniform float u_time;
   uniform float u_dpr;
 
-  // pass to FS
-  varying float v_life;     // 0..1
+  varying float v_life;
   varying vec3  v_colA;
   varying vec3  v_colB;
   varying vec3  v_colC;
 
   void main(){
-    // life progression 0..1
     float life = clamp( (u_time - a_t0) / a_dur, 0.0, 1.0 );
     v_life = life;
     v_colA = a_colA; v_colB = a_colB; v_colC = a_colC;
 
-    // radius (px) grows with life, convert to gl_PointSize (pixels)
     float radius = a_rmax * life;
     gl_PointSize = radius * 2.0 * u_dpr;
 
-    // place point at center in NDC (-1..1)
     gl_Position = vec4(a_center, 0.0, 1.0);
   }
 `;
 const rippleFS = `
   precision mediump float; precision mediump int;
-  varying float v_life; // 0..1
-  varying vec3  v_colA; // inner
-  varying vec3  v_colB; // mid
-  varying vec3  v_colC; // outer
+  varying float v_life;
+  varying vec3  v_colA;
+  varying vec3  v_colB;
+  varying vec3  v_colC;
 
   void main(){
-    // radial [0..1] from center of point sprite
     vec2 uv = gl_PointCoord - 0.5;
-    float r = length(uv) * 2.0; // 0..~1 at edge
+    float r = length(uv) * 2.0;
 
-    // three-stop gradient (soft rings)
     float t = smoothstep(0.0, 1.0, r);
-    // inner→mid
     vec3 col = mix(v_colA, v_colB, smoothstep(0.0, 0.45, t));
-    // mid→outer
     col = mix(col, v_colC, smoothstep(0.45, 1.0, t));
 
-    // soft edge & life fade (expand+vanish)
-    float edge = 1.0 - smoothstep(0.9, 1.0, r);   // edge falloff
-    float alpha = (1.0 - v_life) * edge;          // fade over life
+    float edge = 1.0 - smoothstep(0.9, 1.0, r);
+    float alpha = (1.0 - v_life) * edge;
     gl_FragColor = vec4(col, alpha);
 
     if(gl_FragColor.a < 0.015) discard;
@@ -114,6 +103,7 @@ export class JourneyScene {
   private analyser: AnalyserNode;
   private track: Track;
   private dataArray: Uint8Array;
+  private prevData: Uint8Array;
 
   private renderer!: THREE.WebGLRenderer;
   private scene!: THREE.Scene;
@@ -130,28 +120,52 @@ export class JourneyScene {
   private rUniforms!: { [k: string]: THREE.IUniform };
 
   // attribute arrays
-  private a_center!: Float32Array; // vec2
-  private a_t0!: Float32Array;     // float
-  private a_dur!: Float32Array;    // float
-  private a_rmax!: Float32Array;   // float (px)
-  private a_colA!: Float32Array;   // vec3
-  private a_colB!: Float32Array;   // vec3
-  private a_colC!: Float32Array;   // vec3
+  private a_center!: Float32Array;
+  private a_t0!: Float32Array;
+  private a_dur!: Float32Array;
+  private a_rmax!: Float32Array;
+  private a_colA!: Float32Array;
+  private a_colB!: Float32Array;
+  private a_colC!: Float32Array;
 
   private pool: number[] = [];
   private live: number[] = [];
 
-  // beat detection
+  // Advanced beat detection
   private ema = 0;
-  private cooldown = 0; // ms
+  private cooldown = 0;
   private lastNow = performance.now();
   private animationFrameId = 0;
+
+  // Onset detection
+  private spectralFlux = 0;
+  private fluxHistory: number[] = [];
+  private readonly fluxHistorySize = 60;
+
+  // Energy tracking per band
+  private bassEma = 0;
+  private midEma = 0;
+  private highEma = 0;
+  private prevBass = 0;
+  private prevMid = 0;
+  private prevHigh = 0;
+
+  // Tempo estimation
+  private beatIntervals: number[] = [];
+  private lastBeatTime = 0;
+  private bpmEstimate = 120;
+  private bpmConfidence = 0;
+
+  // Energy history for adaptive threshold
+  private energyHistory: number[] = [];
+  private readonly energyHistorySize = 90;
 
   constructor(canvas: HTMLCanvasElement, analyser: AnalyserNode, track: Track) {
     this.canvas = canvas;
     this.analyser = analyser;
     this.track = track;
     this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+    this.prevData = new Uint8Array(this.analyser.frequencyBinCount);
   }
 
   public init() {
@@ -170,7 +184,6 @@ export class JourneyScene {
     this.renderer.setClearColor(0x000000, 1);
   }
 
-  // ===== background plane (soft ambient) =====
   private setupBackground() {
     const geo = new THREE.PlaneGeometry(2, 2);
     this.bgUni = {
@@ -185,11 +198,9 @@ export class JourneyScene {
     this.scene.add(this.bgMesh);
   }
 
-  // ===== ripple points =====
   private setupRipples() {
     this.rGeometry = new THREE.BufferGeometry();
 
-    // allocate
     this.a_center = new Float32Array(this.maxRipples * 2);
     this.a_t0     = new Float32Array(this.maxRipples);
     this.a_dur    = new Float32Array(this.maxRipples);
@@ -199,7 +210,6 @@ export class JourneyScene {
     this.a_colC   = new Float32Array(this.maxRipples * 3);
 
     for (let i = 0; i < this.maxRipples; i++) {
-      // mark as inactive (life < 0 by setting t0 far future)
       this.a_center.set([999, 999], i * 2);
       this.a_t0[i]   = 1e9;
       this.a_dur[i]  = 1;
@@ -210,7 +220,6 @@ export class JourneyScene {
       this.pool.push(i);
     }
 
-    // attach attributes
     this.rGeometry.setAttribute('a_center', new THREE.BufferAttribute(this.a_center, 2));
     this.rGeometry.setAttribute('a_t0',     new THREE.BufferAttribute(this.a_t0, 1));
     this.rGeometry.setAttribute('a_dur',    new THREE.BufferAttribute(this.a_dur, 1));
@@ -219,7 +228,6 @@ export class JourneyScene {
     this.rGeometry.setAttribute('a_colB',   new THREE.BufferAttribute(this.a_colB, 3));
     this.rGeometry.setAttribute('a_colC',   new THREE.BufferAttribute(this.a_colC, 3));
 
-    // also provide 'position' for draw count compatibility
     const dummyPos = new Float32Array(this.maxRipples * 3);
     this.rGeometry.setAttribute('position', new THREE.BufferAttribute(dummyPos, 3));
     this.rGeometry.setDrawRange(0, this.maxRipples);
@@ -246,17 +254,28 @@ export class JourneyScene {
     this.scene.add(this.rPoints);
   }
 
-  // spawn one ripple (center in NDC, -1..1)
-  private spawnRipple(cx: number, cy: number, energy: number) {
+  private spawnRipple(cx: number, cy: number, energy: number, size: 'small' | 'medium' | 'large' = 'medium') {
     const i = this.pool.pop();
     if (i === undefined) return;
     this.live.push(i);
 
     const t = performance.now() * 0.001;
-    const dur  = 0.9 + Math.random() * 0.8;                // seconds
-    const rmax = (320 + Math.random() * 480) * (0.6 + energy); // px
+    
+    let dur: number, rmax: number;
+    switch(size) {
+      case 'small':
+        dur = 0.5 + Math.random() * 0.3;
+        rmax = (120 + Math.random() * 180) * (0.5 + energy * 0.5);
+        break;
+      case 'large':
+        dur = 1.2 + Math.random() * 0.6;
+        rmax = (400 + Math.random() * 400) * (0.7 + energy * 0.3);
+        break;
+      default:
+        dur = 0.8 + Math.random() * 0.4;
+        rmax = (240 + Math.random() * 280) * (0.6 + energy * 0.4);
+    }
 
-    // pick 3 colors from palette (soft random shift)
     const base = this.track.palette ?? ['#6bd3ff','#00c2a8','#c9f658'];
     const ca = new THREE.Color(base[Math.floor(Math.random()*base.length)]);
     const cb = new THREE.Color(base[Math.floor(Math.random()*base.length)]);
@@ -272,7 +291,6 @@ export class JourneyScene {
     this.a_colB[i*3+0]=cb.r; this.a_colB[i*3+1]=cb.g; this.a_colB[i*3+2]=cb.b;
     this.a_colC[i*3+0]=cc.r; this.a_colC[i*3+1]=cc.g; this.a_colC[i*3+2]=cc.b;
 
-    // mark updates
     (this.rGeometry.getAttribute('a_center') as THREE.BufferAttribute).needsUpdate = true;
     (this.rGeometry.getAttribute('a_t0')     as THREE.BufferAttribute).needsUpdate = true;
     (this.rGeometry.getAttribute('a_dur')    as THREE.BufferAttribute).needsUpdate = true;
@@ -288,7 +306,6 @@ export class JourneyScene {
       const t0 = this.a_t0[i];
       const dur = this.a_dur[i];
       if (nowSec - t0 > dur) {
-        // recycle
         this.a_center[i*2+0] = 999; this.a_center[i*2+1] = 999;
         (this.rGeometry.getAttribute('a_center') as THREE.BufferAttribute).needsUpdate = true;
         this.pool.push(i);
@@ -297,42 +314,117 @@ export class JourneyScene {
     }
   }
 
-  // ===== loop =====
   private animate = () => {
     this.animationFrameId = requestAnimationFrame(this.animate);
 
     const now = performance.now();
     const nowSec = now * 0.001;
-    const dtMs = now - this.lastNow; this.lastNow = now;
+    const dtMs = now - this.lastNow; 
+    this.lastNow = now;
 
-    // audio bands
     this.analyser.getByteFrequencyData(this.dataArray);
     const bass = avg(this.dataArray, 0, 32) / 255;
-    const mid  = avg(this.dataArray, 32, 128) / 255;
+    const mid  = avg(this.dataArray, 32, 96) / 255;
+    const high = avg(this.dataArray, 96, 200) / 255;
 
-    // background anim
     this.bgUni.u_time.value = nowSec;
     this.bgUni.u_bass.value = bass;
 
-    // beat detection tuned for Journey
-    const energy = 0.6*mid + 0.4*bass;
-    this.ema += (energy - this.ema) * 0.12;
-    const accel = energy - this.ema;
-    if (this.cooldown > 0) this.cooldown -= dtMs;
+    this.detectAndSpawnRipples(now, dtMs, bass, mid, high);
 
-    if (accel > 0.02 && energy > 0.22 && this.cooldown <= 0) {
-      const cx = (Math.random()*2.0 - 1.0)*0.8; // -0.8..0.8
-      const cy = (Math.random()*2.0 - 1.0)*0.8; // -0.8..0.8
-      this.spawnRipple(cx, cy, energy);
-      this.cooldown = 260; // ms
-    }
-
-    // advance time uniform for ripples, and cull finished
     this.rUniforms.u_time.value = nowSec;
     this.cullRipples(nowSec);
 
+    this.prevData.set(this.dataArray);
+
     this.renderer.render(this.scene, this.camera);
   };
+
+  private detectAndSpawnRipples(now: number, dtMs: number, bass: number, mid: number, high: number) {
+    // Update EMAs per band
+    const smoothing = 0.18;
+    this.bassEma += (bass - this.bassEma) * smoothing;
+    this.midEma += (mid - this.midEma) * smoothing;
+    this.highEma += (high - this.highEma) * smoothing;
+
+    // Calculate acceleration (급격한 변화)
+    const bassAccel = bass - this.bassEma;
+    const midAccel = mid - this.midEma;
+    const highAccel = high - this.highEma;
+
+    // 쿨다운
+    const kickCooldown = (60000 / this.bpmEstimate) / 3.5;
+    const otherCooldown = (60000 / this.bpmEstimate) / 4.5;
+    if (this.cooldown > 0) this.cooldown -= dtMs;
+
+    // KICK DRUM - 다층 감지 (초반/중반/후반 모두 대응)
+    const condition1 = bassAccel > 0.04 && bass > 0.15;  // 상대적 증가
+    const condition2 = bass > this.prevBass * 1.15 && bass > 0.18 && bassAccel > 0.015;  // 15% 점프
+    const condition3 = bass > 0.3 && bassAccel > 0.01 && bass > this.prevBass;  // 후반 클라이막스
+    
+    const isStrongKick = condition1 || condition2 || condition3;
+
+    if (isStrongKick && this.cooldown <= 0) {
+      const cx = (Math.random() * 1.4 - 0.7);
+      const cy = (Math.random() * 1.4 - 0.7);
+      this.spawnRipple(cx, cy, Math.max(bass, 0.4), 'large');
+      this.updateTempo(now);
+      this.cooldown = kickCooldown;
+    }
+    // MID (스네어/클랩)
+    else if (this.cooldown <= 0) {
+      const isMidHit = (midAccel > 0.04 && mid > 0.12) ||
+                       (mid > this.prevMid * 1.25 && mid > 0.15 && midAccel > 0.02);
+      
+      if (isMidHit) {
+        const cx = (Math.random() * 1.6 - 0.8);
+        const cy = (Math.random() * 1.6 - 0.8);
+        this.spawnRipple(cx, cy, mid, 'medium');
+        this.cooldown = otherCooldown;
+      }
+    }
+    // HIGH (하이햇)
+    else if (this.cooldown <= 0) {
+      const isHighHit = (highAccel > 0.045 && high > 0.12) ||
+                        (high > this.prevHigh * 1.3 && high > 0.15 && highAccel > 0.025);
+      
+      if (isHighHit) {
+        const cx = (Math.random() * 1.8 - 0.9);
+        const cy = (Math.random() * 1.8 - 0.9);
+        this.spawnRipple(cx, cy, high, 'small');
+        this.cooldown = otherCooldown * 0.7;
+      }
+    }
+
+    this.prevBass = bass;
+    this.prevMid = mid;
+    this.prevHigh = high;
+  }
+
+  private updateTempo(now: number) {
+    if (this.lastBeatTime > 0) {
+      const interval = now - this.lastBeatTime;
+      
+      if (interval > 200 && interval < 2000) {
+        this.beatIntervals.push(interval);
+        
+        if (this.beatIntervals.length > 16) {
+          this.beatIntervals.shift();
+        }
+
+        if (this.beatIntervals.length >= 4) {
+          const sorted = [...this.beatIntervals].sort((a, b) => a - b);
+          const median = sorted[Math.floor(sorted.length / 2)];
+          const estimatedBPM = 60000 / median;
+
+          this.bpmEstimate += (estimatedBPM - this.bpmEstimate) * 0.1;
+          this.bpmConfidence = Math.min(1, this.beatIntervals.length / 16);
+        }
+      }
+    }
+    
+    this.lastBeatTime = now;
+  }
 
   private handleResize = () => {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -352,7 +444,3 @@ export class JourneyScene {
     this.renderer?.dispose();
   }
 }
-
-
-
-
