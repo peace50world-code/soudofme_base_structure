@@ -7,60 +7,14 @@ const avg = (arr: Uint8Array, s: number, e: number): number => {
   return n ? sum / n : 0;
 };
 
-// Smoke particle shader
-const smokeVS = `
-  attribute float size;
-  attribute float opacity;
-  attribute vec3 color;
-  
-  varying float v_opacity;
-  varying vec3 v_color;
-  
-  uniform float u_time;
-  uniform float u_bass;
-  
-  void main() {
-    v_opacity = opacity;
-    v_color = color;
-    
-    vec3 pos = position;
-    
-    // Turbulent motion
-    float turbulence = sin(u_time * 0.5 + position.x * 3.0) * 0.3 * u_bass;
-    pos.x += turbulence;
-    pos.z += cos(u_time * 0.3 + position.y * 2.0) * 0.2 * u_bass;
-    
-    vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-    gl_PointSize = size * (300.0 / -mvPosition.z);
-    gl_Position = projectionMatrix * mvPosition;
-  }
-`;
-
-const smokeFS = `
-  varying float v_opacity;
-  varying vec3 v_color;
-  
-  void main() {
-    // Soft circular gradient
-    vec2 uv = gl_PointCoord - 0.5;
-    float dist = length(uv);
-    float alpha = 1.0 - smoothstep(0.0, 0.5, dist);
-    alpha *= v_opacity;
-    
-    // Add some noise to edges
-    float edge = smoothstep(0.3, 0.5, dist);
-    alpha *= 1.0 - edge * 0.5;
-    
-    gl_FragColor = vec4(v_color, alpha);
-  }
-`;
-
 // Background distortion shader
 const bgVS = `
   varying vec2 v_uv;
   void main() {
     v_uv = uv;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    // Directly output clip space coordinates for a fullscreen quad.
+    // This bypasses camera projection, making it always fill the screen.
+    gl_Position = vec4(position.xy, 0.0, 1.0);
   }
 `;
 
@@ -69,7 +23,9 @@ const bgFS = `
   uniform float u_time;
   uniform float u_bass;
   uniform float u_mid;
+  uniform float u_beat;
   uniform vec2 u_resolution;
+  uniform float u_flow_time;
 
   float random(vec2 st) {
     return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
@@ -89,7 +45,7 @@ const bgFS = `
   float fbm(vec2 st) {
     float value = 0.0;
     float amplitude = 0.5;
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 4; i++) { // Reduced octaves for smoother noise
       value += amplitude * noise(st);
       st *= 2.0;
       amplitude *= 0.5;
@@ -99,131 +55,77 @@ const bgFS = `
 
   void main() {
     vec2 st = v_uv;
-    st.x *= u_resolution.x / u_resolution.y;
+
+    // 1. Correct aspect ratio and apply a more subtle vertical stretch
+    float aspect = u_resolution.x / u_resolution.y;
+    st = (st - 0.5) * vec2(aspect, 1.0) + 0.5;
+    st.y = (st.y - 0.5) * 1.8 + 0.5;
+
+    // 2. Music-reactive horizontal movement (sway)
+    st.x += sin(u_time * 0.4) * u_mid * 0.2;
+
+    // Beat-driven zoom/push from center
+    vec2 dir = st - vec2(0.5);
+    float dist = length(dir);
+    float push_amount = u_beat * 0.3 * smoothstep(0.6, 0.0, dist);
+    st -= normalize(dir) * push_amount;
+    float beat_zoom = 1.0 - u_beat * 0.2;
+    st = (st - 0.5) * beat_zoom + 0.5;
     
-    // Slower, heavier flow
-    float timeFlow = u_time * 0.08;
+    // 3. Music-reactive flow speed
+    float timeFlow = u_flow_time * 0.7;
     
-    // Distortion based on audio
-    vec2 distortion = vec2(
-      fbm(st * 2.0 + timeFlow) * u_bass * 0.3,
-      fbm(st * 2.5 + timeFlow + 10.0) * u_mid * 0.2
+    // --- PATTERN GENERATION ---
+
+    // A. The smooth, flowing base pattern
+    vec2 st_flow = st * 1.2;
+    vec2 q_flow = vec2(fbm(st_flow + timeFlow), fbm(st_flow + vec2(5.2, 1.3)));
+    vec2 r_flow = vec2(
+      fbm(st_flow + 1.5 * q_flow + vec2(1.7, 9.2) + 0.15 * timeFlow),
+      fbm(st_flow + 1.5 * q_flow + vec2(8.3, 2.8) + 0.12 * timeFlow)
     );
-    
-    st += distortion;
-    
-    // Multi-layer noise
-    vec2 q = vec2(fbm(st + timeFlow), fbm(st + vec2(5.2, 1.3)));
-    vec2 r = vec2(
-      fbm(st + 3.0 * q + vec2(1.7, 9.2) + 0.1 * timeFlow),
-      fbm(st + 3.0 * q + vec2(8.3, 2.8) + 0.08 * timeFlow)
+    float n_flow = fbm(st_flow + 2.0 * r_flow);
+
+    // B. The chaotic, explosive beat pattern
+    vec2 st_beat = st * 3.5; 
+    vec2 q_beat = vec2(fbm(st_beat + u_time * 2.0), fbm(st_beat + vec2(3.1, 4.2)));
+    vec2 r_beat = vec2(
+      fbm(st_beat + 2.0 * q_beat + vec2(6.7, 2.2) + 0.2 * u_time * 2.0),
+      fbm(st_beat + 2.0 * q_beat + vec2(1.3, 7.8) + 0.18 * u_time * 2.0)
     );
+    float n_beat = fbm(st_beat + 2.5 * r_beat);
+
+    // C. Mix between the two patterns based on the beat
+    float n = mix(n_flow, n_beat, u_beat);
     
-    float n = fbm(st + 3.0 * r);
+    // Multi-layered color palette for depth and clarity
+    vec3 color_bg = vec3(0.02, 0.0, 0.0);
+    vec3 color_red = vec3(0.8, 0.05, 0.0);
+    vec3 color_orange = vec3(1.0, 0.4, 0.0);
+    vec3 color_yellow_core = vec3(1.0, 0.9, 0.4);
+
+    // Sharper, more defined color transitions for better shape definition
+    vec3 color = mix(color_bg, color_red, smoothstep(0.35, 0.45, n));
+    color = mix(color, color_orange, smoothstep(0.45, 0.55, n));
     
-    // Darker, more intense colors
-    vec3 color1 = vec3(0.05, 0.0, 0.0);   // Very dark red
-    vec3 color2 = vec3(0.3, 0.05, 0.0);   // Deep ember
-    vec3 color3 = vec3(0.9, 0.3, 0.1);    // Hot orange
-    vec3 color4 = vec3(1.0, 0.8, 0.4);    // Bright core
+    // The 'hot' core expands and brightens with the beat
+    float core_mix = smoothstep(0.55, 0.65 + u_beat * 0.15, n);
+    color = mix(color, color_yellow_core, core_mix);
+
+    // Add subtle grain for texture
+    float grain = (random(v_uv * (u_time + 1.0)) - 0.5) * 0.1;
+    color += grain;
     
-    vec3 color = mix(color1, color2, smoothstep(0.2, 0.4, n));
-    color = mix(color, color3, smoothstep(0.4, 0.65, n));
-    color = mix(color, color4, smoothstep(0.65, 0.8, n));
+    // Vignette to focus the center
+    float vignette = smoothstep(1.0, 0.4, length(v_uv - 0.5));
+    color *= vignette * 0.8 + 0.2;
     
-    // Pulsing highlights
-    float pulse = sin(u_time * 2.0) * 0.5 + 0.5;
-    float highlight = smoothstep(0.7, 0.85, n) * u_mid * pulse;
-    color += highlight * vec3(1.0, 0.6, 0.2) * 0.6;
-    
-    // Vignette
-    float vignette = smoothstep(0.8, 0.2, length(v_uv - 0.5));
-    color *= vignette * 0.6 + 0.4;
-    
-    gl_FragColor = vec4(color, 1.0);
+    // Overall brightness pulse on beat
+    color *= 1.0 + u_beat * 0.5;
+
+    gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
   }
 `;
-
-class SmokeParticle {
-  position: THREE.Vector3;
-  velocity: THREE.Vector3;
-  size: number;
-  opacity: number;
-  life: number;
-  maxLife: number;
-  color: THREE.Color;
-
-  constructor() {
-    this.position = new THREE.Vector3();
-    this.velocity = new THREE.Vector3();
-    this.size = 0;
-    this.opacity = 0;
-    this.life = 0;
-    this.maxLife = 1;
-    this.color = new THREE.Color();
-  }
-
-  reset(bass: number) {
-    // Spawn from bottom
-    this.position.set(
-      (Math.random() - 0.5) * 4,
-      -2,
-      (Math.random() - 0.5) * 2
-    );
-    
-    // Upward velocity with randomness
-    this.velocity.set(
-      (Math.random() - 0.5) * 0.3,
-      0.4 + Math.random() * 0.6,
-      (Math.random() - 0.5) * 0.2
-    );
-    
-    this.size = 0.5 + Math.random() * 1.5 + bass * 2;
-    this.opacity = 0;
-    this.life = 0;
-    this.maxLife = 3 + Math.random() * 4;
-    
-    // Color variation (ember to bright)
-    const heat = Math.random();
-    if (heat < 0.3) {
-      this.color.setRGB(0.2, 0.02, 0.0); // Dark ember
-    } else if (heat < 0.7) {
-      this.color.setRGB(0.8, 0.2, 0.05); // Orange
-    } else {
-      this.color.setRGB(1.0, 0.6, 0.2); // Bright
-    }
-  }
-
-  update(dt: number, bass: number, mid: number) {
-    this.life += dt;
-    
-    // Fade in/out
-    const lifeRatio = this.life / this.maxLife;
-    if (lifeRatio < 0.2) {
-      this.opacity = lifeRatio / 0.2;
-    } else if (lifeRatio > 0.7) {
-      this.opacity = 1.0 - (lifeRatio - 0.7) / 0.3;
-    } else {
-      this.opacity = 1.0;
-    }
-    
-    // Slow down as it rises (viscous feel)
-    this.velocity.y *= 0.98;
-    this.velocity.x *= 0.99;
-    this.velocity.z *= 0.99;
-    
-    // Audio influence
-    this.velocity.x += (Math.random() - 0.5) * bass * 0.01;
-    this.velocity.y += mid * 0.005;
-    
-    this.position.add(this.velocity.clone().multiplyScalar(dt));
-    
-    // Expand as it rises
-    this.size += dt * 0.1;
-    
-    return lifeRatio < 1.0;
-  }
-}
 
 export class BelieverScene {
   private canvas: HTMLCanvasElement;
@@ -239,25 +141,17 @@ export class BelieverScene {
   private bgMesh!: THREE.Mesh;
   private bgUniforms!: { [k: string]: THREE.IUniform };
   
-  // Smoke particles
-  private particles: SmokeParticle[] = [];
-  private particleCount = 200;
-  private smokeGeometry!: THREE.BufferGeometry;
-  private smokePoints!: THREE.Points;
-  private smokeUniforms!: { [k: string]: THREE.IUniform };
-  
-  private positions!: Float32Array;
-  private sizes!: Float32Array;
-  private opacities!: Float32Array;
-  private colors!: Float32Array;
-
   private animationFrameId = 0;
   private lastTime = 0;
+  private flowTime = 0;
   
   // Audio smoothing
   private bassSmooth = 0;
   private midSmooth = 0;
-  private trebleSmooth = 0;
+
+  // Beat detection
+  private beat = 0;
+  private prevBass = 0;
 
   constructor(canvas: HTMLCanvasElement, analyser: AnalyserNode, track: Track) {
     this.canvas = canvas;
@@ -269,7 +163,6 @@ export class BelieverScene {
   public init() {
     this.setupScene();
     this.setupBackground();
-    this.setupSmoke();
     this.handleResize();
     window.addEventListener('resize', this.handleResize);
     this.lastTime = performance.now();
@@ -289,61 +182,24 @@ export class BelieverScene {
   }
 
   private setupBackground() {
-    const geo = new THREE.PlaneGeometry(10, 10);
+    const geo = new THREE.PlaneGeometry(2, 2);
     this.bgUniforms = {
       u_time: { value: 0 },
       u_bass: { value: 0 },
       u_mid: { value: 0 },
+      u_beat: { value: 0 },
       u_resolution: { value: new THREE.Vector2(1, 1) },
+      u_flow_time: { value: 0 },
     };
     const mat = new THREE.ShaderMaterial({
       uniforms: this.bgUniforms,
       vertexShader: bgVS,
       fragmentShader: bgFS,
       depthWrite: false,
+      depthTest: false,
     });
     this.bgMesh = new THREE.Mesh(geo, mat);
-    this.bgMesh.position.z = -5;
     this.scene.add(this.bgMesh);
-  }
-
-  private setupSmoke() {
-    // Initialize particles
-    for (let i = 0; i < this.particleCount; i++) {
-      const p = new SmokeParticle();
-      p.reset(0);
-      p.life = Math.random() * p.maxLife; // Stagger
-      this.particles.push(p);
-    }
-    
-    // Buffers
-    this.positions = new Float32Array(this.particleCount * 3);
-    this.sizes = new Float32Array(this.particleCount);
-    this.opacities = new Float32Array(this.particleCount);
-    this.colors = new Float32Array(this.particleCount * 3);
-    
-    this.smokeGeometry = new THREE.BufferGeometry();
-    this.smokeGeometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
-    this.smokeGeometry.setAttribute('size', new THREE.BufferAttribute(this.sizes, 1));
-    this.smokeGeometry.setAttribute('opacity', new THREE.BufferAttribute(this.opacities, 1));
-    this.smokeGeometry.setAttribute('color', new THREE.BufferAttribute(this.colors, 3));
-    
-    this.smokeUniforms = {
-      u_time: { value: 0 },
-      u_bass: { value: 0 },
-    };
-    
-    const mat = new THREE.ShaderMaterial({
-      uniforms: this.smokeUniforms,
-      vertexShader: smokeVS,
-      fragmentShader: smokeFS,
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    
-    this.smokePoints = new THREE.Points(this.smokeGeometry, mat);
-    this.scene.add(this.smokePoints);
   }
 
   private animate = () => {
@@ -362,47 +218,29 @@ export class BelieverScene {
     // Audio analysis
     const bass = avg(this.dataArray, 0, 32) / 255;
     const mid = avg(this.dataArray, 40, 120) / 255;
-    const treble = avg(this.dataArray, 150, 400) / 255;
     
-    // Smooth
+    // Smooth values for general flow
     const smoothing = 0.1;
     this.bassSmooth += (bass - this.bassSmooth) * smoothing;
     this.midSmooth += (mid - this.midSmooth) * smoothing;
-    this.trebleSmooth += (treble - this.trebleSmooth) * smoothing;
     
-    // Update background
+    // Music-driven flow time, almost entirely dependent on audio energy.
+    this.flowTime += dt * (0.01 + this.bassSmooth * 0.5 + this.midSmooth * 0.25);
+
+    // Beat detection
+    const bassOnset = Math.max(0, bass - this.prevBass);
+    if (bassOnset > 0.05 && bass > 0.4) {
+        this.beat = 1.0;
+    }
+    this.beat *= 0.92; // decay
+    this.prevBass = bass;
+
+    // Update uniforms
     this.bgUniforms.u_time.value = time;
     this.bgUniforms.u_bass.value = this.bassSmooth;
     this.bgUniforms.u_mid.value = this.midSmooth;
-    
-    // Update smoke
-    this.smokeUniforms.u_time.value = time;
-    this.smokeUniforms.u_bass.value = this.bassSmooth;
-    
-    // Update particles
-    for (let i = 0; i < this.particleCount; i++) {
-      const p = this.particles[i];
-      const alive = p.update(dt, this.bassSmooth, this.midSmooth);
-      
-      if (!alive) {
-        p.reset(this.bassSmooth);
-      }
-      
-      // Update buffers
-      this.positions[i * 3 + 0] = p.position.x;
-      this.positions[i * 3 + 1] = p.position.y;
-      this.positions[i * 3 + 2] = p.position.z;
-      this.sizes[i] = p.size;
-      this.opacities[i] = p.opacity * 0.4;
-      this.colors[i * 3 + 0] = p.color.r;
-      this.colors[i * 3 + 1] = p.color.g;
-      this.colors[i * 3 + 2] = p.color.b;
-    }
-    
-    (this.smokeGeometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
-    (this.smokeGeometry.attributes.size as THREE.BufferAttribute).needsUpdate = true;
-    (this.smokeGeometry.attributes.opacity as THREE.BufferAttribute).needsUpdate = true;
-    (this.smokeGeometry.attributes.color as THREE.BufferAttribute).needsUpdate = true;
+    this.bgUniforms.u_beat.value = this.beat;
+    this.bgUniforms.u_flow_time.value = this.flowTime;
   }
 
   private handleResize = () => {
@@ -420,8 +258,6 @@ export class BelieverScene {
     window.removeEventListener('resize', this.handleResize);
     this.bgMesh?.geometry.dispose();
     (this.bgMesh?.material as THREE.Material)?.dispose();
-    this.smokeGeometry?.dispose();
-    (this.smokePoints?.material as THREE.Material)?.dispose();
     this.renderer?.dispose();
   }
 }
