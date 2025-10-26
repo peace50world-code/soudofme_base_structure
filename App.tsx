@@ -50,7 +50,7 @@ const App: React.FC = () => {
     if (audioEl.current) {
       const toRaw = (name: string) => RAW_BASE + encodeURIComponent(name);
       audioEl.current.src = toRaw(track.file);
-      audioEl.current.load();
+      // REMOVED: audioEl.current.load(); This was causing a race condition.
       if (playOnSelect) {
         audioEl.current.play().catch(e => console.error("Error playing audio:", e));
       }
@@ -92,7 +92,8 @@ const App: React.FC = () => {
           <DataView 
             analyser={analyser.current} 
             currentTrack={currentTrack} 
-            onEnterScene={() => setView('scene')} 
+            onEnterScene={() => setView('scene')}
+            is3DMode={currentTrack.id === 'too-sweet'}
           />
         );
       case 'scene':
@@ -114,7 +115,7 @@ const App: React.FC = () => {
       <main className="flex-1 relative bg-gradient-to-b from-[#0a0a0a] to-[#080808] via-[#0b0b0b]">
         {renderView()}
       </main>
-      {view !== 'gate' && view !== 'scene' && (
+      {view === 'data' && (
         <Player
           tracks={TRACKS}
           currentTrack={currentTrack}

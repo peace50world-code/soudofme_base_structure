@@ -1,3 +1,5 @@
+import type { Vector3 } from 'three';
+
 export interface Track {
   id: string;
   title: string;
@@ -12,4 +14,9 @@ export interface Particle {
   vx: number;
   vy: number;
   s: number;
+}
+
+export interface Particle3D {
+  originalPosition: Vector3;
+  velocity: Vector3;
 }

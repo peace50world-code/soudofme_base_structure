@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useCallback } from 'react';
 import type { Track, Particle } from '../types';
 import { renderEmotionScene, ensureParticles } from './EmotionRenderer';
+import { ThreeScene } from './ThreeScene';
 
 interface SceneViewProps {
   analyser: AnalyserNode | null;
@@ -19,52 +20,76 @@ const avg = (arr: Uint8Array, s: number, e: number): number => {
 
 const SceneView: React.FC<SceneViewProps> = ({ analyser, currentTrack, onBack }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animationFrameId = useRef<number>(0);
-  const dataArray = useRef<Uint8Array | null>(null);
-  const particles = useRef<Particle[]>([]);
-
-  const renderScene = useCallback(() => {
-    animationFrameId.current = requestAnimationFrame(renderScene);
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (!ctx || !canvas || !analyser || !dataArray.current) return;
-
-    analyser.getByteFrequencyData(dataArray.current);
-    const { clientWidth: w, clientHeight: h } = canvas;
-    ctx.clearRect(0, 0, w, h);
-    
-    const mid = avg(dataArray.current, 64, 256) / 255;
-    const count = Math.floor(140 + mid * 260);
-    particles.current = ensureParticles(particles.current, count, w, h);
-    
-    renderEmotionScene(ctx, currentTrack, dataArray.current, particles.current, w, h);
-
-  }, [analyser, currentTrack]);
+  const visualizerRef = useRef<{ destroy: () => void } | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !analyser) return;
 
-    dataArray.current = new Uint8Array(analyser.frequencyBinCount);
+    // Clean up the previous visualizer before creating a new one
+    if (visualizerRef.current) {
+      visualizerRef.current.destroy();
+      visualizerRef.current = null;
+    }
 
-    const resize = () => {
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
-      const { clientWidth, clientHeight } = canvas;
-      canvas.width = Math.round(clientWidth * dpr);
-      canvas.height = Math.round(clientHeight * dpr);
-      const ctx = canvas.getContext('2d');
-      ctx?.scale(dpr, dpr);
-    };
+    if (currentTrack.id === 'too-sweet') {
+      const threeScene = new ThreeScene(canvas, analyser, currentTrack);
+      threeScene.init();
+      visualizerRef.current = {
+        destroy: () => threeScene.destroy(),
+      };
 
-    resize();
-    window.addEventListener('resize', resize);
-    animationFrameId.current = requestAnimationFrame(renderScene);
+    } else {
+      // Fallback to 2D renderer for other tracks
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      const particles: Particle[] = [];
+      let animationFrameId: number;
 
+      const resize2D = () => {
+        const dpr = Math.min(2, window.devicePixelRatio || 1);
+        const { clientWidth, clientHeight } = canvas;
+        canvas.width = Math.round(clientWidth * dpr);
+        canvas.height = Math.round(clientHeight * dpr);
+        const ctx = canvas.getContext('2d');
+        ctx?.scale(dpr, dpr);
+      };
+
+      const render2DScene = () => {
+        animationFrameId = requestAnimationFrame(render2DScene);
+        const ctx = canvas.getContext('2d');
+        if (!ctx || !analyser) return;
+
+        analyser.getByteFrequencyData(dataArray);
+        const { clientWidth: w, clientHeight: h } = canvas;
+        ctx.clearRect(0, 0, w, h);
+        
+        const mid = avg(dataArray, 64, 256) / 255;
+        const count = Math.floor(140 + mid * 260);
+        const currentParticles = ensureParticles(particles, count, w, h);
+        
+        renderEmotionScene(ctx, currentTrack, dataArray, currentParticles, w, h);
+      };
+      
+      resize2D();
+      window.addEventListener('resize', resize2D);
+      render2DScene();
+
+      visualizerRef.current = {
+        destroy: () => {
+          cancelAnimationFrame(animationFrameId);
+          window.removeEventListener('resize', resize2D);
+        },
+      };
+    }
+
+    // Cleanup when component unmounts
     return () => {
-      cancelAnimationFrame(animationFrameId.current);
-      window.removeEventListener('resize', resize);
+      if (visualizerRef.current) {
+        visualizerRef.current.destroy();
+        visualizerRef.current = null;
+      }
     };
-  }, [analyser, renderScene]);
+  }, [analyser, currentTrack]);
 
   return (
     <div className="fixed inset-0 bg-[#050505] z-20">
