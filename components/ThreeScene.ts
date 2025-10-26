@@ -193,7 +193,7 @@ export class ThreeScene {
     this.setupPostProcessing();
     this.setupMesh();
     this.setupBackgroundParticles();
-    this.handleResize();
+    // REMOVED: this.handleResize(); This call caused a race condition.
     window.addEventListener('resize', this.handleResize);
     this.animate();
   }
@@ -336,7 +336,7 @@ export class ThreeScene {
   }
 
   private handleResize = () => {
-    const { clientWidth, clientHeight } = this.canvas;
+    const { clientWidth, clientHeight } = this.canvas.parentElement || this.canvas;
     this.setSize(clientWidth, clientHeight, window.devicePixelRatio);
   };
 

@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import type { Track } from './types';
 import { TRACKS, RAW_BASE } from './constants';
@@ -13,11 +14,19 @@ const App: React.FC = () => {
   const [view, setView] = useState<View>('gate');
   const [currentTrack, setCurrentTrack] = useState<Track>(TRACKS[0]);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [volume, setVolume] = useState(0.75); // Add volume state
 
   const audioEl = useRef<HTMLAudioElement>(null);
   const audioContext = useRef<AudioContext | null>(null);
   const analyser = useRef<AnalyserNode | null>(null);
   const sourceNode = useRef<MediaElementAudioSourceNode | null>(null);
+
+  // Effect to sync volume state with the audio element
+  useEffect(() => {
+    if (audioEl.current) {
+      audioEl.current.volume = volume;
+    }
+  }, [volume]);
 
   const handleStartAudio = useCallback(async () => {
     if (!audioContext.current) {
@@ -30,6 +39,8 @@ const App: React.FC = () => {
       analyser.current = an;
 
       if (audioEl.current) {
+        // Set initial volume
+        audioEl.current.volume = volume;
         const sn = AC.createMediaElementSource(audioEl.current);
         sn.connect(an);
         an.connect(AC.destination);
@@ -42,7 +53,7 @@ const App: React.FC = () => {
     
     setView('data');
     handleSelectTrack(currentTrack.id, true);
-  }, [currentTrack.id]);
+  }, [currentTrack.id, volume]); // Add volume to dependency array
 
   const handleSelectTrack = useCallback((id: string, playOnSelect = false) => {
     const track = TRACKS.find(t => t.id === id) || TRACKS[0];
@@ -50,7 +61,6 @@ const App: React.FC = () => {
     if (audioEl.current) {
       const toRaw = (name: string) => RAW_BASE + encodeURIComponent(name);
       audioEl.current.src = toRaw(track.file);
-      // REMOVED: audioEl.current.load(); This was causing a race condition.
       if (playOnSelect) {
         audioEl.current.play().catch(e => console.error("Error playing audio:", e));
       }
@@ -63,6 +73,10 @@ const App: React.FC = () => {
   
   const handlePause = useCallback(() => {
     audioEl.current?.pause();
+  }, []);
+
+  const handleVolumeChange = useCallback((newVolume: number) => {
+    setVolume(newVolume);
   }, []);
   
   useEffect(() => {
@@ -93,7 +107,7 @@ const App: React.FC = () => {
             analyser={analyser.current} 
             currentTrack={currentTrack} 
             onEnterScene={() => setView('scene')}
-            is3DMode={currentTrack.id === 'too-sweet'}
+            is3DMode={currentTrack.id === 'too-sweet' || currentTrack.id === 'journey'}
           />
         );
       case 'scene':
@@ -123,6 +137,8 @@ const App: React.FC = () => {
           onSelectTrack={handleSelectTrack}
           onPlay={handlePlay}
           onPause={handlePause}
+          volume={volume}
+          onVolumeChange={handleVolumeChange}
         />
       )}
        <audio ref={audioEl} crossOrigin="anonymous" />

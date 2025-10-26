@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useCallback } from 'react';
 import type { Track, Particle } from '../types';
 import { renderEmotionScene, ensureParticles } from './EmotionRenderer';
 import { ThreeScene } from './ThreeScene';
+import { JourneyScene } from './JourneyScene';
 
 interface DataViewProps {
   analyser: AnalyserNode | null;
@@ -18,8 +19,8 @@ const avg = (arr: Uint8Array, s: number, e: number): number => {
 
 const DataView: React.FC<DataViewProps> = ({ analyser, currentTrack, onEnterScene, is3DMode }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const threeCanvasRef = useRef<HTMLCanvasElement>(null);
-  const threeSceneRef = useRef<ThreeScene | null>(null);
+  const webglCanvasRef = useRef<HTMLCanvasElement>(null);
+  const webglSceneRef = useRef<{ destroy: () => void } | null>(null);
   const animationFrameId = useRef<number>(0);
   const dataArray = useRef<Uint8Array | null>(null);
   const particles = useRef<Particle[]>([]);
@@ -33,17 +34,27 @@ const DataView: React.FC<DataViewProps> = ({ analyser, currentTrack, onEnterScen
   });
 
   useEffect(() => {
-    if (is3DMode && analyser && threeCanvasRef.current) {
-      if (!threeSceneRef.current) {
-        const scene = new ThreeScene(threeCanvasRef.current, analyser, currentTrack);
+    if (is3DMode && analyser && webglCanvasRef.current) {
+      if (webglSceneRef.current) {
+        webglSceneRef.current.destroy();
+      }
+      
+      let scene;
+      if (currentTrack.id === 'too-sweet') {
+        scene = new ThreeScene(webglCanvasRef.current, analyser, currentTrack);
+      } else if (currentTrack.id === 'journey') {
+        scene = new JourneyScene(webglCanvasRef.current, analyser, currentTrack);
+      }
+      
+      if (scene) {
         scene.init();
-        threeSceneRef.current = scene;
+        webglSceneRef.current = scene;
       }
     }
     return () => {
-      if (threeSceneRef.current) {
-        threeSceneRef.current.destroy();
-        threeSceneRef.current = null;
+      if (webglSceneRef.current) {
+        webglSceneRef.current.destroy();
+        webglSceneRef.current = null;
       }
     };
   }, [is3DMode, analyser, currentTrack]);
@@ -157,8 +168,8 @@ const DataView: React.FC<DataViewProps> = ({ analyser, currentTrack, onEnterScen
       canvas.height = Math.round(clientHeight * dpr);
       const ctx = canvas.getContext('2d');
       ctx?.scale(dpr, dpr);
-      if (threeSceneRef.current) {
-        threeSceneRef.current.setSize(clientWidth, clientHeight, dpr);
+      if (webglSceneRef.current && 'setSize' in webglSceneRef.current) {
+        (webglSceneRef.current as any).setSize(clientWidth, clientHeight, dpr);
       }
     };
     const onMove = (e: MouseEvent) => {
@@ -190,7 +201,7 @@ const DataView: React.FC<DataViewProps> = ({ analyser, currentTrack, onEnterScen
   return (
     <div className="relative w-full h-full">
       <canvas
-        ref={threeCanvasRef}
+        ref={webglCanvasRef}
         className={`absolute inset-0 w-full h-full block pointer-events-none ${is3DMode ? '' : 'hidden'}`}
       />
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full block" />
