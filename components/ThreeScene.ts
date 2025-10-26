@@ -1,4 +1,3 @@
-
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -193,7 +192,7 @@ export class ThreeScene {
     this.setupPostProcessing();
     this.setupMesh();
     this.setupBackgroundParticles();
-    // REMOVED: this.handleResize(); This call caused a race condition.
+    this.handleResize();
     window.addEventListener('resize', this.handleResize);
     this.animate();
   }
