@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useCallback } from 'react';
 import type { Track, Particle } from '../types';
 import { renderEmotionScene, ensureParticles } from './EmotionRenderer';
 import { ThreeScene } from './ThreeScene';
+import { JourneyScene } from './JourneyScene';
 
 interface SceneViewProps {
   analyser: AnalyserNode | null;
@@ -38,7 +39,12 @@ const SceneView: React.FC<SceneViewProps> = ({ analyser, currentTrack, onBack })
       visualizerRef.current = {
         destroy: () => threeScene.destroy(),
       };
-
+    } else if (currentTrack.id === 'journey') {
+      const journeyScene = new JourneyScene(canvas, analyser, currentTrack);
+      journeyScene.init();
+       visualizerRef.current = {
+        destroy: () => journeyScene.destroy(),
+      };
     } else {
       // Fallback to 2D renderer for other tracks
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
