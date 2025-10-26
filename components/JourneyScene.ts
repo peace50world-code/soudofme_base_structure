@@ -90,11 +90,12 @@ const rippleFS = `
     vec3 col = mix(v_colA, v_colB, smoothstep(0.0, 0.45, t));
     col = mix(col, v_colC, smoothstep(0.45, 1.0, t));
 
-    float edge = 1.0 - smoothstep(0.9, 1.0, r);
+    // Make the edge softer by starting the fade much earlier (from 70% of radius)
+    float edge = 1.0 - smoothstep(0.70, 1.0, r);
     float alpha = (1.0 - v_life) * edge;
     gl_FragColor = vec4(col, alpha);
 
-    if(gl_FragColor.a < 0.015) discard;
+    if(gl_FragColor.a < 0.01) discard;
   }
 `;
 
@@ -254,27 +255,20 @@ export class JourneyScene {
     this.scene.add(this.rPoints);
   }
 
-  private spawnRipple(cx: number, cy: number, energy: number, size: 'small' | 'medium' | 'large' = 'medium') {
+  private spawnRipple(cx: number, cy: number, energy: number) {
     const i = this.pool.pop();
     if (i === undefined) return;
     this.live.push(i);
 
     const t = performance.now() * 0.001;
     
-    let dur: number, rmax: number;
-    switch(size) {
-      case 'small':
-        dur = 0.5 + Math.random() * 0.3;
-        rmax = (120 + Math.random() * 180) * (0.5 + energy * 0.5);
-        break;
-      case 'large':
-        dur = 1.2 + Math.random() * 0.6;
-        rmax = (400 + Math.random() * 400) * (0.7 + energy * 0.3);
-        break;
-      default:
-        dur = 0.8 + Math.random() * 0.4;
-        rmax = (240 + Math.random() * 280) * (0.6 + energy * 0.4);
-    }
+    // Size (rmax) is now directly and exponentially tied to the beat's energy.
+    // A small base size ensures even quiet beats are visible.
+    // The exponential part creates a huge difference between soft and loud beats.
+    const rmax = 40 + 700 * Math.pow(energy, 4);
+
+    // Duration is also linked to energy, making larger ripples last longer.
+    const dur = 0.6 + energy * 1.4;
 
     const base = this.track.palette ?? ['#6bd3ff','#00c2a8','#c9f658'];
     const ca = new THREE.Color(base[Math.floor(Math.random()*base.length)]);
@@ -367,7 +361,7 @@ export class JourneyScene {
     if (isStrongKick && this.cooldown <= 0) {
       const cx = (Math.random() * 1.4 - 0.7);
       const cy = (Math.random() * 1.4 - 0.7);
-      this.spawnRipple(cx, cy, Math.max(bass, 0.4), 'large');
+      this.spawnRipple(cx, cy, bass);
       this.updateTempo(now);
       this.cooldown = kickCooldown;
     }
@@ -379,7 +373,7 @@ export class JourneyScene {
       if (isMidHit) {
         const cx = (Math.random() * 1.6 - 0.8);
         const cy = (Math.random() * 1.6 - 0.8);
-        this.spawnRipple(cx, cy, mid, 'medium');
+        this.spawnRipple(cx, cy, mid);
         this.cooldown = otherCooldown;
       }
     }
@@ -391,7 +385,7 @@ export class JourneyScene {
       if (isHighHit) {
         const cx = (Math.random() * 1.8 - 0.9);
         const cy = (Math.random() * 1.8 - 0.9);
-        this.spawnRipple(cx, cy, high, 'small');
+        this.spawnRipple(cx, cy, high);
         this.cooldown = otherCooldown * 0.7;
       }
     }
