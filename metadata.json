@@ -1,0 +1,5 @@
+{
+  "name": "Sound of Me",
+  "description": "An audio-reactive web application that transforms music into a visual emotional journey. The app features a data-centric spectrum view that reveals an 'emotion lens' on hover, and a fullscreen immersive particle scene that visualizes the music's mood.",
+  "requestFramePermissions": []
+}
