@@ -36,26 +36,42 @@ const DataView: React.FC<DataViewProps> = ({ analyser, currentTrack, onEnterScen
   });
 
   useEffect(() => {
-    if (is3DMode && analyser && webglCanvasRef.current) {
+    if (!is3DMode || !analyser || !webglCanvasRef.current) {
+      // If we are not in 3D mode, ensure any existing webgl scene is cleaned up.
+      if (webglSceneRef.current) {
+        webglSceneRef.current.destroy();
+        webglSceneRef.current = null;
+      }
+      return;
+    }
+
+    const canvas = webglCanvasRef.current;
+    
+    // Defer initialization by one frame to avoid race conditions
+    const timeoutId = setTimeout(() => {
+      // Clean up previous scene if one exists from a rapid change
       if (webglSceneRef.current) {
         webglSceneRef.current.destroy();
       }
       
       let scene;
       if (currentTrack.id === 'too-sweet') {
-        scene = new ThreeScene(webglCanvasRef.current, analyser, currentTrack);
+        scene = new ThreeScene(canvas, analyser, currentTrack);
       } else if (currentTrack.id === 'journey') {
-        scene = new JourneyScene(webglCanvasRef.current, analyser, currentTrack);
+        scene = new JourneyScene(canvas, analyser, currentTrack);
       } else if (currentTrack.id === 'believer') {
-        scene = new BelieverScene(webglCanvasRef.current, analyser, currentTrack);
+        scene = new BelieverScene(canvas, analyser, currentTrack);
       }
       
       if (scene) {
         scene.init();
         webglSceneRef.current = scene;
       }
-    }
+    }, 16); // A delay of ~1 frame is usually sufficient
+
+    // This cleanup function will run on unmount or when dependencies change.
     return () => {
+      clearTimeout(timeoutId);
       if (webglSceneRef.current) {
         webglSceneRef.current.destroy();
         webglSceneRef.current = null;

@@ -29,75 +29,81 @@ const SceneView: React.FC<SceneViewProps> = ({ analyser, currentTrack, onBack })
     const canvas = canvasRef.current;
     if (!canvas || !analyser) return;
 
-    // Clean up the previous visualizer before creating a new one
-    if (visualizerRef.current) {
-      visualizerRef.current.destroy();
-      visualizerRef.current = null;
-    }
+    // Defer initialization to allow the previous view's resources to release.
+    const timeoutId = setTimeout(() => {
+        // Clean up any existing visualizer before creating a new one
+        if (visualizerRef.current) {
+          visualizerRef.current.destroy();
+          visualizerRef.current = null;
+        }
 
-    if (currentTrack.id === 'too-sweet') {
-      const threeScene = new ThreeScene(canvas, analyser, currentTrack);
-      threeScene.init();
-      visualizerRef.current = {
-        destroy: () => threeScene.destroy(),
-      };
-    } else if (currentTrack.id === 'journey') {
-      const journeyScene = new JourneyScene(canvas, analyser, currentTrack);
-      journeyScene.init();
-       visualizerRef.current = {
-        destroy: () => journeyScene.destroy(),
-      };
-    } else if (currentTrack.id === 'believer') {
-      const believerScene = new BelieverScene(canvas, analyser, currentTrack);
-      believerScene.init();
-      visualizerRef.current = {
-        destroy: () => believerScene.destroy(),
-      };
-    } else {
-      // Fallback to 2D renderer for other tracks
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      const particles: Particle[] = [];
-      let animationFrameId: number;
+        if (currentTrack.id === 'too-sweet') {
+          const threeScene = new ThreeScene(canvas, analyser, currentTrack);
+          threeScene.init();
+          visualizerRef.current = {
+            destroy: () => threeScene.destroy(),
+          };
+        } else if (currentTrack.id === 'journey') {
+          const journeyScene = new JourneyScene(canvas, analyser, currentTrack);
+          journeyScene.init();
+           visualizerRef.current = {
+            destroy: () => journeyScene.destroy(),
+          };
+        } else if (currentTrack.id === 'believer') {
+          const believerScene = new BelieverScene(canvas, analyser, currentTrack);
+          believerScene.init();
+          visualizerRef.current = {
+            destroy: () => believerScene.destroy(),
+          };
+        } else {
+          // Fallback to 2D renderer for other tracks
+          const dataArray = new Uint8Array(analyser.frequencyBinCount);
+          const particles: Particle[] = [];
+          let animationFrameId: number;
+    
+          const resize2D = () => {
+            if (!canvas) return; // Canvas might be gone if component unmounts quickly
+            const dpr = Math.min(2, window.devicePixelRatio || 1);
+            const { clientWidth, clientHeight } = canvas;
+            canvas.width = Math.round(clientWidth * dpr);
+            canvas.height = Math.round(clientHeight * dpr);
+            const ctx = canvas.getContext('2d');
+            ctx?.scale(dpr, dpr);
+          };
+    
+          const render2DScene = () => {
+            animationFrameId = requestAnimationFrame(render2DScene);
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            if (!ctx || !analyser) return;
+    
+            analyser.getByteFrequencyData(dataArray);
+            const { clientWidth: w, clientHeight: h } = canvas;
+            ctx.clearRect(0, 0, w, h);
+            
+            const mid = avg(dataArray, 64, 256) / 255;
+            const count = Math.floor(140 + mid * 260);
+            const currentParticles = ensureParticles(particles, count, w, h);
+            
+            renderEmotionScene(ctx, currentTrack, dataArray, currentParticles, w, h);
+          };
+          
+          resize2D();
+          window.addEventListener('resize', resize2D);
+          render2DScene();
+    
+          visualizerRef.current = {
+            destroy: () => {
+              cancelAnimationFrame(animationFrameId);
+              window.removeEventListener('resize', resize2D);
+            },
+          };
+        }
+    }, 16); // A 16ms delay is roughly one frame, a safe bet.
 
-      const resize2D = () => {
-        const dpr = Math.min(2, window.devicePixelRatio || 1);
-        const { clientWidth, clientHeight } = canvas;
-        canvas.width = Math.round(clientWidth * dpr);
-        canvas.height = Math.round(clientHeight * dpr);
-        const ctx = canvas.getContext('2d');
-        ctx?.scale(dpr, dpr);
-      };
-
-      const render2DScene = () => {
-        animationFrameId = requestAnimationFrame(render2DScene);
-        const ctx = canvas.getContext('2d');
-        if (!ctx || !analyser) return;
-
-        analyser.getByteFrequencyData(dataArray);
-        const { clientWidth: w, clientHeight: h } = canvas;
-        ctx.clearRect(0, 0, w, h);
-        
-        const mid = avg(dataArray, 64, 256) / 255;
-        const count = Math.floor(140 + mid * 260);
-        const currentParticles = ensureParticles(particles, count, w, h);
-        
-        renderEmotionScene(ctx, currentTrack, dataArray, currentParticles, w, h);
-      };
-      
-      resize2D();
-      window.addEventListener('resize', resize2D);
-      render2DScene();
-
-      visualizerRef.current = {
-        destroy: () => {
-          cancelAnimationFrame(animationFrameId);
-          window.removeEventListener('resize', resize2D);
-        },
-      };
-    }
-
-    // Cleanup when component unmounts
+    // Cleanup for the effect
     return () => {
+      clearTimeout(timeoutId);
       if (visualizerRef.current) {
         visualizerRef.current.destroy();
         visualizerRef.current = null;
