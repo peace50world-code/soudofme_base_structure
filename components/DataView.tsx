@@ -1,4 +1,3 @@
-
 import React, { useRef, useEffect, useCallback } from 'react';
 import type { Track, Particle } from '../types';
 import { renderEmotionScene, ensureParticles } from './EmotionRenderer';
@@ -104,7 +103,7 @@ const DataView: React.FC<DataViewProps> = ({ analyser, currentTrack, onEnterScen
 
     ctx.strokeStyle = '#101010';
     ctx.lineWidth = 1;
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i <= 8; i++) {
       const y = Math.round(margin + ((height - margin * 2) / 8) * i) + 0.5;
       ctx.beginPath(); ctx.moveTo(margin, y); ctx.lineTo(width - margin, y); ctx.stroke();
     }
